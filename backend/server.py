@@ -21,8 +21,8 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Google Places API Key
-GOOGLE_PLACES_API_KEY = "AIzaSyDkyWP12O7MPEu-s3W4ayfWpVZ1y4_WDAo"
+# Google Places API Key - loaded from environment
+GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
 
 # Create the main app
 app = FastAPI()
@@ -210,6 +210,8 @@ async def get_nearby_stations(
     places = await fetch_nearby_gas_stations(latitude, longitude)
     
     stations = []
+    bulk_operations = []
+    
     for place in places:
         try:
             place_id = place.get('id', '')
@@ -245,16 +247,26 @@ async def get_nearby_stations(
             )
             stations.append(station)
             
-            # Cache in MongoDB
-            await db.stations.update_one(
-                {"place_id": place_id},
-                {"$set": station.dict()},
-                upsert=True
+            # Prepare bulk operation for MongoDB
+            from pymongo import UpdateOne
+            bulk_operations.append(
+                UpdateOne(
+                    {"place_id": place_id},
+                    {"$set": station.dict()},
+                    upsert=True
+                )
             )
             
         except Exception as e:
             logger.error(f"Error processing station: {e}")
             continue
+    
+    # Execute bulk write to MongoDB (single operation instead of N)
+    if bulk_operations:
+        try:
+            await db.stations.bulk_write(bulk_operations, ordered=False)
+        except Exception as e:
+            logger.warning(f"Bulk write warning: {e}")
     
     # Sort by price (cheapest first)
     # Map fuel_type to attribute name
@@ -294,8 +306,11 @@ async def create_status_check(input: StatusCheckCreate):
 
 
 @api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
+async def get_status_checks(
+    limit: int = Query(100, description="Maximum number of results", le=1000),
+    skip: int = Query(0, description="Number of results to skip", ge=0)
+):
+    status_checks = await db.status_checks.find().skip(skip).limit(limit).to_list(limit)
     return [StatusCheck(**status_check) for status_check in status_checks]
 
 
