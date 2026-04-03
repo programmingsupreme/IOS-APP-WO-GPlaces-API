@@ -9,6 +9,9 @@ import {
   Platform,
   AppState,
   AppStateStatus,
+  Linking,
+  Image,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { FlashList } from '@shopify/flash-list';
@@ -18,6 +21,25 @@ import { Ionicons } from '@expo/vector-icons';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
+// Theme colors matching the icons
+const THEME = {
+  background: '#0a1628',
+  cardBackground: '#0f2038',
+  cardBorder: '#1a3a5c',
+  primaryTeal: '#00CED1',
+  accentGold: '#DAA520',
+  textPrimary: '#ffffff',
+  textSecondary: '#7a9ab8',
+  gasColor: '#00CED1',
+  dieselColor: '#00CED1',
+  premiumColor: '#FFD700',
+  midgradeColor: '#C0C0C0',
+  regularColor: '#00CED1',
+};
+
+type FuelCategory = 'gas' | 'diesel';
+type GasGrade = 'regular' | 'midgrade' | 'premium';
+
 interface GasStation {
   id: string;
   place_id: string;
@@ -26,8 +48,12 @@ interface GasStation {
   latitude: number;
   longitude: number;
   distance_miles: number;
-  gas_price: number | null;
-  gas_price_formatted: string | null;
+  regular_price: number | null;
+  regular_price_formatted: string | null;
+  midgrade_price: number | null;
+  midgrade_price_formatted: string | null;
+  premium_price: number | null;
+  premium_price_formatted: string | null;
   diesel_price: number | null;
   diesel_price_formatted: string | null;
 }
@@ -38,7 +64,8 @@ interface LocationCoords {
 }
 
 export default function Index() {
-  const [fuelType, setFuelType] = useState<'gas' | 'diesel'>('gas');
+  const [fuelCategory, setFuelCategory] = useState<FuelCategory>('gas');
+  const [gasGrade, setGasGrade] = useState<GasGrade>('regular');
   const [stations, setStations] = useState<GasStation[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -47,6 +74,12 @@ export default function Index() {
   const [locationError, setLocationError] = useState<string | null>(null);
   const [showPaywall, setShowPaywall] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
+
+  // Get the actual fuel type for API
+  const getApiType = () => {
+    if (fuelCategory === 'diesel') return 'diesel';
+    return gasGrade;
+  };
 
   // Request location permission and get current location
   const getLocation = useCallback(async () => {
@@ -100,14 +133,14 @@ export default function Index() {
   }, []);
 
   // Fetch stations from backend
-  const fetchStations = useCallback(async (coords: LocationCoords, fuel: 'gas' | 'diesel') => {
+  const fetchStations = useCallback(async (coords: LocationCoords, fuelType: string) => {
     try {
       setError(null);
       const response = await axios.get(`${BACKEND_URL}/api/stations`, {
         params: {
           latitude: coords.latitude,
           longitude: coords.longitude,
-          fuel_type: fuel,
+          fuel_type: fuelType,
         },
         timeout: 30000,
       });
@@ -129,12 +162,12 @@ export default function Index() {
     }
     
     if (coords) {
-      await fetchStations(coords, fuelType);
+      await fetchStations(coords, getApiType());
     }
     
     setLoading(false);
     setRefreshing(false);
-  }, [location, fuelType, getLocation, fetchStations]);
+  }, [location, fuelCategory, gasGrade, getLocation, fetchStations]);
 
   // Initial load
   useEffect(() => {
@@ -146,7 +179,7 @@ export default function Index() {
     if (location) {
       loadData(false);
     }
-  }, [fuelType]);
+  }, [fuelCategory, gasGrade]);
 
   // Handle app state changes (refresh when coming to foreground)
   useEffect(() => {
@@ -167,14 +200,41 @@ export default function Index() {
     // Get fresh location on refresh
     const coords = await getLocation();
     if (coords) {
-      await fetchStations(coords, fuelType);
+      await fetchStations(coords, getApiType());
     }
     setRefreshing(false);
-  }, [fuelType, getLocation, fetchStations]);
+  }, [fuelCategory, gasGrade, getLocation, fetchStations]);
 
-  // Toggle fuel type
-  const toggleFuelType = (type: 'gas' | 'diesel') => {
-    setFuelType(type);
+  // Open navigation to station
+  const openNavigation = (station: GasStation) => {
+    const { latitude, longitude, name } = station;
+    const label = encodeURIComponent(name);
+    
+    let url = '';
+    
+    if (Platform.OS === 'ios') {
+      // Apple Maps
+      url = `maps://app?daddr=${latitude},${longitude}&q=${label}`;
+    } else if (Platform.OS === 'android') {
+      // Google Maps
+      url = `google.navigation:q=${latitude},${longitude}`;
+    } else {
+      // Web - open Google Maps
+      url = `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}&destination_place_id=${station.place_id}`;
+    }
+    
+    Linking.canOpenURL(url).then((supported) => {
+      if (supported) {
+        Linking.openURL(url);
+      } else {
+        // Fallback to Google Maps web URL
+        const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}`;
+        Linking.openURL(webUrl);
+      }
+    }).catch((err) => {
+      console.error('Navigation error:', err);
+      Alert.alert('Error', 'Unable to open navigation app');
+    });
   };
 
   // Handle subscription (mock)
@@ -183,26 +243,62 @@ export default function Index() {
     setShowPaywall(false);
   };
 
+  // Get price based on current fuel selection
+  const getPrice = (station: GasStation) => {
+    if (fuelCategory === 'diesel') {
+      return station.diesel_price_formatted;
+    }
+    switch (gasGrade) {
+      case 'premium':
+        return station.premium_price_formatted;
+      case 'midgrade':
+        return station.midgrade_price_formatted;
+      default:
+        return station.regular_price_formatted;
+    }
+  };
+
+  // Get grade label color
+  const getGradeColor = () => {
+    if (fuelCategory === 'diesel') return THEME.dieselColor;
+    switch (gasGrade) {
+      case 'premium':
+        return THEME.premiumColor;
+      case 'midgrade':
+        return THEME.midgradeColor;
+      default:
+        return THEME.regularColor;
+    }
+  };
+
   // Render station item
   const renderStation = ({ item, index }: { item: GasStation; index: number }) => {
-    const price = fuelType === 'gas' ? item.gas_price_formatted : item.diesel_price_formatted;
+    const price = getPrice(item);
     const hasPrice = price !== null;
     const rank = index + 1;
+    const gradeColor = getGradeColor();
 
     return (
-      <View style={styles.stationCard}>
+      <TouchableOpacity 
+        style={styles.stationCard}
+        onPress={() => openNavigation(item)}
+        activeOpacity={0.7}
+      >
         <View style={styles.rankContainer}>
           <Text style={styles.rankText}>#{rank}</Text>
         </View>
         
         <View style={styles.fuelIconContainer}>
-          <Ionicons 
-            name={fuelType === 'gas' ? 'car' : 'bus'} 
-            size={28} 
-            color={fuelType === 'gas' ? '#4CAF50' : '#FF9800'} 
+          <Image 
+            source={fuelCategory === 'gas' 
+              ? require('../assets/images/gas-icon.png')
+              : require('../assets/images/diesel-icon.png')
+            }
+            style={styles.fuelIcon}
+            resizeMode="contain"
           />
-          <Text style={styles.fuelTypeLabel}>
-            {fuelType === 'gas' ? 'GAS' : 'DIESEL'}
+          <Text style={[styles.fuelTypeLabel, { color: gradeColor }]}>
+            {fuelCategory === 'diesel' ? 'DIESEL' : gasGrade.toUpperCase()}
           </Text>
         </View>
         
@@ -213,19 +309,23 @@ export default function Index() {
           <Text style={styles.stationAddress} numberOfLines={1}>
             {item.address || 'Address not available'}
           </Text>
+          <View style={styles.navHint}>
+            <Ionicons name="navigate-outline" size={12} color={THEME.primaryTeal} />
+            <Text style={styles.navHintText}>Tap for directions</Text>
+          </View>
         </View>
         
         <View style={styles.priceDistanceContainer}>
-          <Text style={[styles.priceText, !hasPrice && styles.noPriceText]}>
+          <Text style={[styles.priceText, !hasPrice && styles.noPriceText, { color: gradeColor }]}>
             {hasPrice ? price : 'N/A'}
           </Text>
           <Text style={styles.perGallon}>{hasPrice ? '/gal' : ''}</Text>
           <View style={styles.distanceRow}>
-            <Ionicons name="location-outline" size={14} color="#888" />
+            <Ionicons name="location-outline" size={14} color={THEME.textSecondary} />
             <Text style={styles.distanceText}>{item.distance_miles} mi</Text>
           </View>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -234,22 +334,26 @@ export default function Index() {
     return (
       <SafeAreaView style={styles.paywallContainer}>
         <View style={styles.paywallContent}>
-          <Ionicons name="flash" size={80} color="#4CAF50" />
-          <Text style={styles.paywallTitle}>Fuel Finder Pro</Text>
+          <Image 
+            source={require('../assets/images/icon.png')}
+            style={styles.paywallIcon}
+            resizeMode="contain"
+          />
+          <Text style={styles.paywallTitle}>Get Me Gas Pro</Text>
           <Text style={styles.paywallSubtitle}>Unlock unlimited access to real-time fuel prices</Text>
           
           <View style={styles.featureList}>
             <View style={styles.featureItem}>
-              <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+              <Ionicons name="checkmark-circle" size={24} color={THEME.primaryTeal} />
               <Text style={styles.featureText}>Real-time gas & diesel prices</Text>
             </View>
             <View style={styles.featureItem}>
-              <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
-              <Text style={styles.featureText}>Find closest 10 stations</Text>
+              <Ionicons name="checkmark-circle" size={24} color={THEME.primaryTeal} />
+              <Text style={styles.featureText}>Regular, Midgrade & Premium grades</Text>
             </View>
             <View style={styles.featureItem}>
-              <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
-              <Text style={styles.featureText}>Auto-updates as you drive</Text>
+              <Ionicons name="checkmark-circle" size={24} color={THEME.primaryTeal} />
+              <Text style={styles.featureText}>One-tap navigation to stations</Text>
             </View>
           </View>
           
@@ -275,7 +379,14 @@ export default function Index() {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Fuel Finder</Text>
+        <View style={styles.headerLeft}>
+          <Image 
+            source={require('../assets/images/icon.png')}
+            style={styles.headerIcon}
+            resizeMode="contain"
+          />
+          <Text style={styles.headerTitle}>Get Me Gas</Text>
+        </View>
         <TouchableOpacity 
           style={styles.starButton}
           onPress={() => setShowPaywall(true)}
@@ -284,55 +395,98 @@ export default function Index() {
           <Ionicons 
             name={isSubscribed ? "star" : "star-outline"} 
             size={24} 
-            color={isSubscribed ? "#FFD700" : "#888"} 
+            color={isSubscribed ? THEME.accentGold : THEME.textSecondary} 
           />
         </TouchableOpacity>
       </View>
 
-      {/* Fuel Type Toggle */}
-      <View style={styles.toggleContainer}>
+      {/* Main Fuel Category Toggle (Gas/Diesel) */}
+      <View style={styles.mainToggleContainer}>
         <TouchableOpacity
           style={[
-            styles.toggleButton,
-            fuelType === 'gas' && styles.toggleButtonActive,
+            styles.mainToggleButton,
+            fuelCategory === 'gas' && styles.mainToggleButtonActive,
           ]}
-          onPress={() => toggleFuelType('gas')}
+          onPress={() => setFuelCategory('gas')}
         >
-          <Ionicons 
-            name="car" 
-            size={20} 
-            color={fuelType === 'gas' ? '#fff' : '#888'} 
+          <Image 
+            source={require('../assets/images/gas-icon.png')}
+            style={styles.toggleIcon}
+            resizeMode="contain"
           />
           <Text style={[
-            styles.toggleText,
-            fuelType === 'gas' && styles.toggleTextActive,
+            styles.mainToggleText,
+            fuelCategory === 'gas' && styles.mainToggleTextActive,
           ]}>Gas</Text>
         </TouchableOpacity>
         
         <TouchableOpacity
           style={[
-            styles.toggleButton,
-            fuelType === 'diesel' && styles.toggleButtonActive,
-            fuelType === 'diesel' && styles.toggleButtonDiesel,
+            styles.mainToggleButton,
+            fuelCategory === 'diesel' && styles.mainToggleButtonActive,
           ]}
-          onPress={() => toggleFuelType('diesel')}
+          onPress={() => setFuelCategory('diesel')}
         >
-          <Ionicons 
-            name="bus" 
-            size={20} 
-            color={fuelType === 'diesel' ? '#fff' : '#888'} 
+          <Image 
+            source={require('../assets/images/diesel-icon.png')}
+            style={styles.toggleIcon}
+            resizeMode="contain"
           />
           <Text style={[
-            styles.toggleText,
-            fuelType === 'diesel' && styles.toggleTextActive,
+            styles.mainToggleText,
+            fuelCategory === 'diesel' && styles.mainToggleTextActive,
           ]}>Diesel</Text>
         </TouchableOpacity>
       </View>
 
+      {/* Gas Grade Toggle (only show when gas is selected) */}
+      {fuelCategory === 'gas' && (
+        <View style={styles.gradeToggleContainer}>
+          <TouchableOpacity
+            style={[
+              styles.gradeToggleButton,
+              gasGrade === 'regular' && styles.gradeToggleButtonRegular,
+            ]}
+            onPress={() => setGasGrade('regular')}
+          >
+            <Text style={[
+              styles.gradeToggleText,
+              gasGrade === 'regular' && styles.gradeToggleTextActive,
+            ]}>Regular</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[
+              styles.gradeToggleButton,
+              gasGrade === 'midgrade' && styles.gradeToggleButtonMidgrade,
+            ]}
+            onPress={() => setGasGrade('midgrade')}
+          >
+            <Text style={[
+              styles.gradeToggleText,
+              gasGrade === 'midgrade' && styles.gradeToggleTextActive,
+            ]}>Midgrade</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[
+              styles.gradeToggleButton,
+              gasGrade === 'premium' && styles.gradeToggleButtonPremium,
+            ]}
+            onPress={() => setGasGrade('premium')}
+          >
+            <Text style={[
+              styles.gradeToggleText,
+              gasGrade === 'premium' && styles.gradeToggleTextActive,
+            ]}>Premium</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Location Status */}
       {location && (
         <View style={styles.locationBar}>
-          <Ionicons name="navigate" size={16} color="#4CAF50" />
+          <Ionicons name="navigate" size={16} color={THEME.primaryTeal} />
           <Text style={styles.locationText}>Showing stations near you</Text>
         </View>
       )}
@@ -340,12 +494,12 @@ export default function Index() {
       {/* Content */}
       {loading ? (
         <View style={styles.centerContent}>
-          <ActivityIndicator size="large" color="#4CAF50" />
+          <ActivityIndicator size="large" color={THEME.primaryTeal} />
           <Text style={styles.loadingText}>Finding nearby stations...</Text>
         </View>
       ) : locationError ? (
         <View style={styles.centerContent}>
-          <Ionicons name="location-outline" size={60} color="#888" />
+          <Ionicons name="location-outline" size={60} color={THEME.textSecondary} />
           <Text style={styles.errorText}>{locationError}</Text>
           <TouchableOpacity style={styles.retryButton} onPress={() => loadData()}>
             <Text style={styles.retryButtonText}>Enable Location</Text>
@@ -361,7 +515,7 @@ export default function Index() {
         </View>
       ) : stations.length === 0 ? (
         <View style={styles.centerContent}>
-          <Ionicons name="car-outline" size={60} color="#888" />
+          <Ionicons name="car-outline" size={60} color={THEME.textSecondary} />
           <Text style={styles.emptyText}>No gas stations found nearby</Text>
           <TouchableOpacity style={styles.retryButton} onPress={() => loadData()}>
             <Text style={styles.retryButtonText}>Search Again</Text>
@@ -378,13 +532,13 @@ export default function Index() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={onRefresh}
-              tintColor="#4CAF50"
-              colors={['#4CAF50']}
+              tintColor={THEME.primaryTeal}
+              colors={[THEME.primaryTeal]}
             />
           }
           ListHeaderComponent={
             <Text style={styles.listHeader}>
-              Top 10 Cheapest {fuelType === 'gas' ? 'Gas' : 'Diesel'} Stations
+              Top 10 Cheapest {fuelCategory === 'diesel' ? 'Diesel' : `${gasGrade.charAt(0).toUpperCase() + gasGrade.slice(1)} Gas`} Stations
             </Text>
           }
         />
@@ -396,7 +550,7 @@ export default function Index() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: THEME.background,
   },
   header: {
     flexDirection: 'row',
@@ -405,26 +559,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#2a2a2a',
+    borderBottomColor: THEME.cardBorder,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerIcon: {
+    width: 36,
+    height: 36,
+    marginRight: 10,
+    borderRadius: 8,
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: 'bold',
-    color: '#fff',
+    color: THEME.textPrimary,
   },
   starButton: {
     padding: 8,
     marginRight: -8,
   },
-  toggleContainer: {
+  mainToggleContainer: {
     flexDirection: 'row',
     marginHorizontal: 20,
-    marginVertical: 16,
-    backgroundColor: '#1e1e1e',
+    marginTop: 16,
+    backgroundColor: THEME.cardBackground,
     borderRadius: 12,
     padding: 4,
+    borderWidth: 1,
+    borderColor: THEME.cardBorder,
   },
-  toggleButton: {
+  mainToggleButton: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
@@ -433,31 +599,67 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     gap: 8,
   },
-  toggleButtonActive: {
-    backgroundColor: '#4CAF50',
+  mainToggleButtonActive: {
+    backgroundColor: THEME.primaryTeal,
   },
-  toggleButtonDiesel: {
-    backgroundColor: '#FF9800',
+  toggleIcon: {
+    width: 24,
+    height: 24,
   },
-  toggleText: {
+  mainToggleText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#888',
+    color: THEME.textSecondary,
   },
-  toggleTextActive: {
-    color: '#fff',
+  mainToggleTextActive: {
+    color: THEME.background,
+  },
+  gradeToggleContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginTop: 12,
+    backgroundColor: THEME.cardBackground,
+    borderRadius: 10,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: THEME.cardBorder,
+  },
+  gradeToggleButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  gradeToggleButtonRegular: {
+    backgroundColor: THEME.regularColor,
+  },
+  gradeToggleButtonMidgrade: {
+    backgroundColor: THEME.midgradeColor,
+  },
+  gradeToggleButtonPremium: {
+    backgroundColor: THEME.premiumColor,
+  },
+  gradeToggleText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: THEME.textSecondary,
+  },
+  gradeToggleTextActive: {
+    color: THEME.background,
   },
   locationBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 8,
+    marginTop: 12,
     gap: 6,
-    backgroundColor: 'rgba(76, 175, 80, 0.1)',
+    backgroundColor: 'rgba(0, 206, 209, 0.1)',
   },
   locationText: {
     fontSize: 13,
-    color: '#4CAF50',
+    color: THEME.primaryTeal,
   },
   centerContent: {
     flex: 1,
@@ -468,29 +670,29 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 16,
     fontSize: 16,
-    color: '#888',
+    color: THEME.textSecondary,
   },
   errorText: {
     marginTop: 16,
     fontSize: 16,
-    color: '#888',
+    color: THEME.textSecondary,
     textAlign: 'center',
     paddingHorizontal: 20,
   },
   emptyText: {
     marginTop: 16,
     fontSize: 16,
-    color: '#888',
+    color: THEME.textSecondary,
   },
   retryButton: {
     marginTop: 20,
     paddingHorizontal: 24,
     paddingVertical: 12,
-    backgroundColor: '#4CAF50',
+    backgroundColor: THEME.primaryTeal,
     borderRadius: 8,
   },
   retryButtonText: {
-    color: '#fff',
+    color: THEME.background,
     fontSize: 16,
     fontWeight: '600',
   },
@@ -500,23 +702,27 @@ const styles = StyleSheet.create({
   },
   listHeader: {
     fontSize: 14,
-    color: '#888',
+    color: THEME.textSecondary,
     marginBottom: 12,
     marginTop: 8,
   },
   stationCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1e1e1e',
+    backgroundColor: THEME.cardBackground,
     borderRadius: 12,
     padding: 16,
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: THEME.cardBorder,
   },
   rankContainer: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#2a2a2a',
+    backgroundColor: THEME.background,
+    borderWidth: 1,
+    borderColor: THEME.primaryTeal,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -524,18 +730,22 @@ const styles = StyleSheet.create({
   rankText: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#fff',
+    color: THEME.primaryTeal,
   },
   fuelIconContainer: {
     alignItems: 'center',
     marginRight: 12,
-    width: 40,
+    width: 44,
+  },
+  fuelIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
   },
   fuelTypeLabel: {
-    fontSize: 9,
-    color: '#888',
+    fontSize: 8,
     marginTop: 2,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   stationInfo: {
     flex: 1,
@@ -544,12 +754,22 @@ const styles = StyleSheet.create({
   stationName: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#fff',
+    color: THEME.textPrimary,
     marginBottom: 4,
   },
   stationAddress: {
     fontSize: 12,
-    color: '#888',
+    color: THEME.textSecondary,
+    marginBottom: 4,
+  },
+  navHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  navHintText: {
+    fontSize: 10,
+    color: THEME.primaryTeal,
   },
   priceDistanceContainer: {
     alignItems: 'flex-end',
@@ -557,15 +777,14 @@ const styles = StyleSheet.create({
   priceText: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#4CAF50',
   },
   noPriceText: {
-    color: '#888',
+    color: THEME.textSecondary,
     fontSize: 16,
   },
   perGallon: {
     fontSize: 11,
-    color: '#888',
+    color: THEME.textSecondary,
     marginTop: -2,
   },
   distanceRow: {
@@ -576,12 +795,12 @@ const styles = StyleSheet.create({
   },
   distanceText: {
     fontSize: 12,
-    color: '#888',
+    color: THEME.textSecondary,
   },
   // Paywall styles
   paywallContainer: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: THEME.background,
   },
   paywallContent: {
     flex: 1,
@@ -589,15 +808,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 30,
   },
+  paywallIcon: {
+    width: 100,
+    height: 100,
+    borderRadius: 20,
+  },
   paywallTitle: {
     fontSize: 32,
     fontWeight: 'bold',
-    color: '#fff',
+    color: THEME.textPrimary,
     marginTop: 20,
   },
   paywallSubtitle: {
     fontSize: 16,
-    color: '#888',
+    color: THEME.textSecondary,
     textAlign: 'center',
     marginTop: 10,
     marginBottom: 30,
@@ -614,34 +838,36 @@ const styles = StyleSheet.create({
   },
   featureText: {
     fontSize: 16,
-    color: '#fff',
+    color: THEME.textPrimary,
   },
   priceBox: {
-    backgroundColor: '#1e1e1e',
+    backgroundColor: THEME.cardBackground,
     padding: 24,
     borderRadius: 16,
     alignItems: 'center',
     width: '100%',
     marginBottom: 20,
+    borderWidth: 1,
+    borderColor: THEME.primaryTeal,
   },
   trialText: {
     fontSize: 14,
-    color: '#4CAF50',
+    color: THEME.primaryTeal,
     fontWeight: '600',
     marginBottom: 8,
   },
   subscriptionPrice: {
     fontSize: 36,
     fontWeight: 'bold',
-    color: '#fff',
+    color: THEME.textPrimary,
   },
   cancelText: {
     fontSize: 13,
-    color: '#888',
+    color: THEME.textSecondary,
     marginTop: 4,
   },
   subscribeButton: {
-    backgroundColor: '#4CAF50',
+    backgroundColor: THEME.primaryTeal,
     paddingHorizontal: 60,
     paddingVertical: 16,
     borderRadius: 30,
@@ -650,11 +876,11 @@ const styles = StyleSheet.create({
   subscribeButtonText: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#fff',
+    color: THEME.background,
   },
   skipText: {
     fontSize: 16,
-    color: '#888',
+    color: THEME.textSecondary,
     marginTop: 10,
   },
 });

@@ -1,23 +1,23 @@
 {
   "expo": {
-    "name": "Fuel Finder",
-    "slug": "fuel-finder",
+    "name": "Get Me Gas",
+    "slug": "get-me-gas",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "fuelfinder",
+    "scheme": "getmegas",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Find gas stations near your current location"
+        "NSLocationWhenInUseUsageDescription": "Find cheapest gas stations near you"
       }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "backgroundColor": "#0a1628"
       },
       "edgeToEdgeEnabled": true,
       "permissions": [

@@ -53,8 +53,12 @@ class GasStation(BaseModel):
     latitude: float
     longitude: float
     distance_miles: float
-    gas_price: Optional[float] = None
-    gas_price_formatted: Optional[str] = None
+    regular_price: Optional[float] = None
+    regular_price_formatted: Optional[str] = None
+    midgrade_price: Optional[float] = None
+    midgrade_price_formatted: Optional[str] = None
+    premium_price: Optional[float] = None
+    premium_price_formatted: Optional[str] = None
     diesel_price: Optional[float] = None
     diesel_price_formatted: Optional[str] = None
     fuel_options: List[FuelPrice] = []
@@ -104,8 +108,12 @@ def parse_fuel_price(price_data: dict) -> tuple:
 def extract_fuel_prices(fuel_options: dict) -> dict:
     """Extract gas and diesel prices from fuel options"""
     result = {
-        'gas_price': None,
-        'gas_price_formatted': None,
+        'regular_price': None,
+        'regular_price_formatted': None,
+        'midgrade_price': None,
+        'midgrade_price_formatted': None,
+        'premium_price': None,
+        'premium_price_formatted': None,
         'diesel_price': None,
         'diesel_price_formatted': None,
         'fuel_options': []
@@ -127,11 +135,16 @@ def extract_fuel_prices(fuel_options: dict) -> dict:
         )
         result['fuel_options'].append(fuel_entry)
         
-        # Map to gas (regular unleaded) or diesel
-        if fuel_type in ['REGULAR_UNLEADED', 'MIDGRADE', 'PREMIUM']:
-            if result['gas_price'] is None or fuel_type == 'REGULAR_UNLEADED':
-                result['gas_price'] = price
-                result['gas_price_formatted'] = f"${price:.2f}" if price else None
+        # Map to specific gas grades or diesel
+        if fuel_type == 'REGULAR_UNLEADED':
+            result['regular_price'] = price
+            result['regular_price_formatted'] = f"${price:.2f}" if price else None
+        elif fuel_type == 'MIDGRADE':
+            result['midgrade_price'] = price
+            result['midgrade_price_formatted'] = f"${price:.2f}" if price else None
+        elif fuel_type == 'PREMIUM':
+            result['premium_price'] = price
+            result['premium_price_formatted'] = f"${price:.2f}" if price else None
         elif fuel_type == 'DIESEL':
             result['diesel_price'] = price
             result['diesel_price_formatted'] = f"${price:.2f}" if price else None
@@ -187,7 +200,7 @@ async def root():
 async def get_nearby_stations(
     latitude: float = Query(..., description="User's latitude"),
     longitude: float = Query(..., description="User's longitude"),
-    fuel_type: str = Query("gas", description="Type of fuel: 'gas' or 'diesel'")
+    fuel_type: str = Query("regular", description="Type of fuel: 'regular', 'midgrade', 'premium', or 'diesel'")
 ):
     """Get nearby gas stations sorted by price (cheapest first)"""
     
@@ -220,8 +233,12 @@ async def get_nearby_stations(
                 latitude=place_lat,
                 longitude=place_lng,
                 distance_miles=distance,
-                gas_price=prices['gas_price'],
-                gas_price_formatted=prices['gas_price_formatted'],
+                regular_price=prices['regular_price'],
+                regular_price_formatted=prices['regular_price_formatted'],
+                midgrade_price=prices['midgrade_price'],
+                midgrade_price_formatted=prices['midgrade_price_formatted'],
+                premium_price=prices['premium_price'],
+                premium_price_formatted=prices['premium_price_formatted'],
                 diesel_price=prices['diesel_price'],
                 diesel_price_formatted=prices['diesel_price_formatted'],
                 fuel_options=prices['fuel_options']
@@ -240,8 +257,14 @@ async def get_nearby_stations(
             continue
     
     # Sort by price (cheapest first)
-    # Stations without prices go to the end
-    price_key = 'gas_price' if fuel_type == 'gas' else 'diesel_price'
+    # Map fuel_type to attribute name
+    price_key_map = {
+        'regular': 'regular_price',
+        'midgrade': 'midgrade_price',
+        'premium': 'premium_price',
+        'diesel': 'diesel_price'
+    }
+    price_key = price_key_map.get(fuel_type, 'regular_price')
     
     def sort_key(station):
         price = getattr(station, price_key)
