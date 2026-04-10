@@ -19,7 +19,7 @@ import * as Location from 'expo-location';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+const BACKEND_URL = 'https://ios-app-wo-gplaces-api-production.up.railway.app';
 
 // Theme colors matching the icons
 const THEME = {
@@ -219,8 +219,8 @@ export default function Index() {
       // Google Maps
       url = `google.navigation:q=${latitude},${longitude}`;
     } else {
-      // Web - open Google Maps
-      url = `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}&destination_place_id=${station.place_id}`;
+      // Web - open Google Maps with coordinates
+      url = `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}`;
     }
     
     Linking.canOpenURL(url).then((supported) => {
@@ -538,7 +538,7 @@ export default function Index() {
           }
           ListHeaderComponent={
             <Text style={styles.listHeader}>
-              Top 10 Cheapest {fuelCategory === 'diesel' ? 'Diesel' : `${gasGrade.charAt(0).toUpperCase() + gasGrade.slice(1)} Gas`} Stations
+              Nearby {fuelCategory === 'diesel' ? 'Diesel' : `${gasGrade.charAt(0).toUpperCase() + gasGrade.slice(1)} Gas`} Stations (sorted by distance)
             </Text>
           }
         />
@@ -557,7 +557,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingTop: 54,
+    paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: THEME.cardBorder,
   },

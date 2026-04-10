@@ -21,8 +21,8 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Google Places API Key - loaded from environment
-GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
+# Overpass API endpoint (OpenStreetMap)
+OVERPASS_API_URL = "https://overpass-api.de/api/interpreter"
 
 # Create the main app
 app = FastAPI()
@@ -88,25 +88,13 @@ def calculate_distance_miles(lat1: float, lon1: float, lat2: float, lon2: float)
         return 0.0
 
 
-def parse_fuel_price(price_data: dict) -> tuple:
-    """Parse fuel price from Google Places API response"""
-    try:
-        # The price object has 'units' and 'nanos' fields
-        if 'price' in price_data:
-            price_obj = price_data['price']
-            units = int(price_obj.get('units', 0))
-            nanos = int(price_obj.get('nanos', 0))
-            # Convert nanos to decimal (nanos are 10^-9)
-            price = units + (nanos / 1_000_000_000)
-            currency = price_obj.get('currencyCode', 'USD')
-            return round(price, 2), currency
-    except Exception as e:
-        logger.error(f"Error parsing fuel price: {e}")
-    return None, None
-
-
-def extract_fuel_prices(fuel_options: dict) -> dict:
-    """Extract gas and diesel prices from fuel options"""
+def extract_osm_fuel_prices(tags: dict) -> dict:
+    """
+    Attempt to extract fuel prices from OSM tags.
+    NOTE: Real-time prices are almost never present in OSM data.
+    Some mappers use tags like 'fuel:octane_87:price' = '3.459',
+    but this is extremely rare. Stations will generally show N/A.
+    """
     result = {
         'regular_price': None,
         'regular_price_formatted': None,
@@ -118,74 +106,64 @@ def extract_fuel_prices(fuel_options: dict) -> dict:
         'diesel_price_formatted': None,
         'fuel_options': []
     }
-    
-    if not fuel_options or 'fuelPrices' not in fuel_options:
-        return result
-    
-    for fuel_price in fuel_options.get('fuelPrices', []):
-        fuel_type = fuel_price.get('type', '')
-        price, currency = parse_fuel_price(fuel_price)
-        
-        fuel_entry = FuelPrice(
-            fuel_type=fuel_type,
-            price=price,
-            price_formatted=f"${price:.2f}" if price else None,
-            currency=currency,
-            last_updated=fuel_price.get('updateTime')
-        )
-        result['fuel_options'].append(fuel_entry)
-        
-        # Map to specific gas grades or diesel
-        if fuel_type == 'REGULAR_UNLEADED':
-            result['regular_price'] = price
-            result['regular_price_formatted'] = f"${price:.2f}" if price else None
-        elif fuel_type == 'MIDGRADE':
-            result['midgrade_price'] = price
-            result['midgrade_price_formatted'] = f"${price:.2f}" if price else None
-        elif fuel_type == 'PREMIUM':
-            result['premium_price'] = price
-            result['premium_price_formatted'] = f"${price:.2f}" if price else None
-        elif fuel_type == 'DIESEL':
-            result['diesel_price'] = price
-            result['diesel_price_formatted'] = f"${price:.2f}" if price else None
-    
+
+    def safe_float(val):
+        try:
+            return round(float(val), 2) if val else None
+        except (ValueError, TypeError):
+            return None
+
+    regular = safe_float(tags.get('fuel:octane_87:price') or tags.get('fuel:e10:price'))
+    midgrade = safe_float(tags.get('fuel:octane_89:price'))
+    premium = safe_float(
+        tags.get('fuel:octane_91:price') or tags.get('fuel:octane_93:price') or tags.get('fuel:e5:price')
+    )
+    diesel = safe_float(tags.get('fuel:diesel:price') or tags.get('fuel:HGV_diesel:price'))
+
+    if regular:
+        result['regular_price'] = regular
+        result['regular_price_formatted'] = f"${regular:.2f}"
+        result['fuel_options'].append(FuelPrice(fuel_type='REGULAR_UNLEADED', price=regular, price_formatted=f"${regular:.2f}", currency='USD'))
+    if midgrade:
+        result['midgrade_price'] = midgrade
+        result['midgrade_price_formatted'] = f"${midgrade:.2f}"
+        result['fuel_options'].append(FuelPrice(fuel_type='MIDGRADE', price=midgrade, price_formatted=f"${midgrade:.2f}", currency='USD'))
+    if premium:
+        result['premium_price'] = premium
+        result['premium_price_formatted'] = f"${premium:.2f}"
+        result['fuel_options'].append(FuelPrice(fuel_type='PREMIUM', price=premium, price_formatted=f"${premium:.2f}", currency='USD'))
+    if diesel:
+        result['diesel_price'] = diesel
+        result['diesel_price_formatted'] = f"${diesel:.2f}"
+        result['fuel_options'].append(FuelPrice(fuel_type='DIESEL', price=diesel, price_formatted=f"${diesel:.2f}", currency='USD'))
+
     return result
 
 
 async def fetch_nearby_gas_stations(latitude: float, longitude: float, radius_meters: int = 16000) -> List[dict]:
-    """Fetch nearby gas stations using Google Places API (New)"""
-    url = "https://places.googleapis.com/v1/places:searchNearby"
-    
-    headers = {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.fuelOptions"
-    }
-    
-    payload = {
-        "includedTypes": ["gas_station"],
-        "maxResultCount": 20,
-        "locationRestriction": {
-            "circle": {
-                "center": {
-                    "latitude": latitude,
-                    "longitude": longitude
-                },
-                "radius": radius_meters
-            }
-        }
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    """Fetch nearby gas stations using Overpass API (OpenStreetMap)"""
+    # Overpass QL: find fuel amenities within radius, output up to 20 results with center coords
+    query = (
+        f"[out:json][timeout:30];"
+        f"("
+        f"  node[\"amenity\"=\"fuel\"](around:{radius_meters},{latitude},{longitude});"
+        f"  way[\"amenity\"=\"fuel\"](around:{radius_meters},{latitude},{longitude});"
+        f"  relation[\"amenity\"=\"fuel\"](around:{radius_meters},{latitude},{longitude});"
+        f");"
+        f"out center 20;"
+    )
+
+    async with httpx.AsyncClient(timeout=35.0) as http_client:
         try:
-            response = await client.post(url, json=payload, headers=headers)
+            response = await http_client.post(OVERPASS_API_URL, data={"data": query})
             response.raise_for_status()
             data = response.json()
-            logger.info(f"Google Places API response: {len(data.get('places', []))} stations found")
-            return data.get('places', [])
+            elements = data.get('elements', [])
+            logger.info(f"Overpass API response: {len(elements)} stations found")
+            return elements
         except httpx.HTTPStatusError as e:
-            logger.error(f"Google Places API error: {e.response.status_code} - {e.response.text}")
-            raise HTTPException(status_code=502, detail=f"Google Places API error: {e.response.text}")
+            logger.error(f"Overpass API error: {e.response.status_code} - {e.response.text}")
+            raise HTTPException(status_code=502, detail=f"Overpass API error: {e.response.text}")
         except Exception as e:
             logger.error(f"Error fetching gas stations: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error fetching gas stations: {str(e)}")
@@ -206,28 +184,56 @@ async def get_nearby_stations(
     
     logger.info(f"Fetching stations near ({latitude}, {longitude}) for {fuel_type}")
     
-    # Fetch stations from Google Places API
-    places = await fetch_nearby_gas_stations(latitude, longitude)
-    
+    # Fetch stations from Overpass API (OpenStreetMap)
+    elements = await fetch_nearby_gas_stations(latitude, longitude)
+
     stations = []
     bulk_operations = []
-    
-    for place in places:
+
+    for element in elements:
         try:
-            place_id = place.get('id', '')
-            name = place.get('displayName', {}).get('text', 'Unknown Station')
-            address = place.get('formattedAddress', '')
-            location = place.get('location', {})
-            place_lat = location.get('latitude', 0)
-            place_lng = location.get('longitude', 0)
-            
-            # Calculate distance
+            element_type = element.get('type', 'node')
+            element_id = str(element.get('id', ''))
+            tags = element.get('tags', {})
+
+            # Build a stable place_id from OSM type + id
+            place_id = f"osm_{element_type}_{element_id}"
+
+            # Station name: prefer 'name', fall back to brand / operator
+            name = (
+                tags.get('name')
+                or tags.get('brand')
+                or tags.get('operator')
+                or 'Gas Station'
+            )
+
+            # Coordinates: nodes have lat/lon directly; ways/relations expose a center
+            if element_type == 'node':
+                place_lat = element.get('lat', 0)
+                place_lng = element.get('lon', 0)
+            else:
+                center = element.get('center', {})
+                place_lat = center.get('lat', 0)
+                place_lng = center.get('lon', 0)
+
+            # Build a human-readable address from addr:* tags
+            address_parts = []
+            if tags.get('addr:housenumber'):
+                address_parts.append(tags['addr:housenumber'])
+            if tags.get('addr:street'):
+                address_parts.append(tags['addr:street'])
+            if tags.get('addr:city'):
+                address_parts.append(tags['addr:city'])
+            if tags.get('addr:state'):
+                address_parts.append(tags['addr:state'])
+            address = ', '.join(address_parts) if address_parts else None
+
+            # Calculate distance from user
             distance = calculate_distance_miles(latitude, longitude, place_lat, place_lng)
-            
-            # Extract fuel prices
-            fuel_options = place.get('fuelOptions', {})
-            prices = extract_fuel_prices(fuel_options)
-            
+
+            # OSM rarely carries real-time prices; extract whatever tags exist
+            prices = extract_osm_fuel_prices(tags)
+
             station = GasStation(
                 place_id=place_id,
                 name=name,
@@ -246,8 +252,8 @@ async def get_nearby_stations(
                 fuel_options=prices['fuel_options']
             )
             stations.append(station)
-            
-            # Prepare bulk operation for MongoDB
+
+            # Persist to MongoDB
             from pymongo import UpdateOne
             bulk_operations.append(
                 UpdateOne(
@@ -256,20 +262,19 @@ async def get_nearby_stations(
                     upsert=True
                 )
             )
-            
+
         except Exception as e:
-            logger.error(f"Error processing station: {e}")
+            logger.error(f"Error processing OSM element: {e}")
             continue
-    
-    # Execute bulk write to MongoDB (single operation instead of N)
+
+    # Execute bulk write to MongoDB
     if bulk_operations:
         try:
             await db.stations.bulk_write(bulk_operations, ordered=False)
         except Exception as e:
             logger.warning(f"Bulk write warning: {e}")
-    
-    # Sort by price (cheapest first)
-    # Map fuel_type to attribute name
+
+    # Sort: stations with prices first (cheapest → distance), then the rest by distance
     price_key_map = {
         'regular': 'regular_price',
         'midgrade': 'midgrade_price',
@@ -277,13 +282,13 @@ async def get_nearby_stations(
         'diesel': 'diesel_price'
     }
     price_key = price_key_map.get(fuel_type, 'regular_price')
-    
+
     def sort_key(station):
         price = getattr(station, price_key)
         if price is None:
-            return (1, float('inf'), station.distance_miles)  # No price - sort last
-        return (0, price, station.distance_miles)  # Has price - sort by price, then distance
-    
+            return (1, float('inf'), station.distance_miles)
+        return (0, price, station.distance_miles)
+
     stations.sort(key=sort_key)
     
     # Return top 10
